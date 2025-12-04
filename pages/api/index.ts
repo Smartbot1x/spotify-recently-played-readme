@@ -6,6 +6,10 @@ import { getTokensFromFirebase, writeTokensToFirebase } from '../../utils/Fireba
 import { getRecentlyPlayed, getUsername, isValidToken, refreshAccessToken } from '../../utils/SpotifyAuthUtil';
 import { generateSvg } from '../../utils/SvgUtil';
 
+function sanitizeUsername(username: string): string {
+  return username.replace(/\./g, '_');
+}
+
 /**
  * Main endpoint to return SVG.
  */
@@ -17,10 +21,11 @@ export default async (req: NextApiRequest, res: NextApiResponse): Promise<void> 
         return;
     }
 
+    const sanitized = sanitizeUsername(user);
+
     // Parse 'width' query parameter
     const widthQuery: string | string[] | undefined = req.query['width'];
     let width = Constants.defaultWidth;
-
     if (typeof widthQuery === 'string') {
         width = parseInt(widthQuery);
     }
@@ -29,11 +34,9 @@ export default async (req: NextApiRequest, res: NextApiResponse): Promise<void> 
         res.json({ error: `'width' parameter must be between ${Constants.minWidth} and ${Constants.maxWidth}` });
         return;
     }
-
     // Parse 'count' query parameter
     const countQuery: string | string[] | undefined = req.query['count'];
     let count = Constants.defaultCount;
-
     if (typeof countQuery === 'string') {
         count = parseInt(countQuery);
     }
@@ -42,7 +45,6 @@ export default async (req: NextApiRequest, res: NextApiResponse): Promise<void> 
         res.json({ error: `'count' parameter must be between ${Constants.minCount} and ${Constants.maxCount}` });
         return;
     }
-
     function parseBoolean(value: string) {
         switch (value) {
             case 'true':
@@ -59,45 +61,39 @@ export default async (req: NextApiRequest, res: NextApiResponse): Promise<void> 
     if (typeof uniqueTrackQuery === 'string') {
         uniqueTrack = parseBoolean(uniqueTrackQuery);
     }
-
     try {
         // Retrieve access tokens from Firebase
-        const tokens = await getTokensFromFirebase(user);
+        const tokens = await getTokensFromFirebase(sanitized);
         if (!tokens.accessToken || !tokens.refreshToken) {
             // Tokens are missing, so redirect to home with error message
             res.redirect(`${Constants.BaseUrl}?error=Please authorize below.`);
             return;
         }
-
         // Check if token is valid
         const validToken = await isValidToken(tokens.accessToken);
-
         if (!validToken) {
             try {
                 // Invalid token, so obtain new access token using refresh token
                 const newAccessToken = await refreshAccessToken(tokens.refreshToken);
                 tokens.accessToken = newAccessToken;
                 // Write new access token to Firebase
-                await writeTokensToFirebase(user, tokens.accessToken, tokens.refreshToken);
+                await writeTokensToFirebase(sanitized, tokens.accessToken, tokens.refreshToken);
             } catch (e) {
                 // Otherwise redirect user to re-authorize
                 res.redirect(`${Constants.BaseUrl}?error=Please re-authorize below.`);
                 return;
             }
         }
-
         // Get recently played tracks
         const username = await getUsername(tokens.accessToken);
         const limit = uniqueTrack ? Constants.defaultUniqueTrackSearchLimit : count
         let recentlyPlayedItems = await getRecentlyPlayed(limit, tokens.accessToken);
-
         if (uniqueTrack) {
             // Remove duplicate tracks...
             recentlyPlayedItems = recentlyPlayedItems.filter((v, i, a) => a.findIndex((t) => t.track.id === v.track.id) === i);
             // ... then only return the number of items that are requested.
             recentlyPlayedItems = recentlyPlayedItems.slice(0, count);
         }
-
         // Set base64-encoded cover art images by routing through /api/proxy endpoint
         // This is needed because GitHub's Content Security Policy prohibits external images (inline allowed)
         for (const { track } of recentlyPlayedItems) {
@@ -107,7 +103,6 @@ export default async (req: NextApiRequest, res: NextApiResponse): Promise<void> 
                 if (!smallImg) {
                     throw new Error();
                 }
-
                 const { data } = await axios.get<string>(`${Constants.BaseUrl}/api/proxy`, {
                     params: {
                         img: smallImg,
@@ -118,7 +113,6 @@ export default async (req: NextApiRequest, res: NextApiResponse): Promise<void> 
                 track.inlineimage = PlaceholderImg;
             }
         }
-
         res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate');
         res.setHeader('Content-Type', 'image/svg+xml');
         res.statusCode = 200;
